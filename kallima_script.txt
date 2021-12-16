@@ -1,0 +1,61 @@
+#trimmomatic
+for i in `cat kust`
+do
+java -jar /usr/share/Trimmomatic-0.38/trimmomatic-0.38.jar PE -threads 10 -phred33 ${i}_1.fq.gz ${i}_2.fq.gz output_paired_${i}_1.fq.gz output_unpaired_${i}_1.fq.gz output_paired_${i}_2.fq.gz output_unpaired_${i}_2.fq.gz LEADING:3 TRAILING:3 SLIDINGWINDOW:90:10 MINLEN:36 HEADCROP:15 >> trim.log 2>&1
+done
+
+#generate bam
+#!/bin/bash
+/usr/share/bowtie2-build Kin_FINAL_HIC.fasta Kin_Nov
+samtools faidx Kin_FINAL_HIC.fasta      
+
+java -Xmx20g -XX:PermSize=10g -XX:MaxPermSize=10g -jar /user/share/picard-tools-1.96/CreateSequenceDictionary.jar R=Kin_FINAL_HIC.fasta O=Kin_Nov.dict
+ 
+for i in `cat fqlist`
+do 
+/usr/share/bowtie2-2.3.4.3-linux-x86_64/bowtie2 --very-sensitive-local -p 20 -x ~/wst/trimfile/continued/paired/Kin_Nov -1 ${i}R1.fq.gz -2 ${i}R2.fq.gz -S ${i}best.sam >> ${i}sam.log 2>&1 
+
+samtools view -bST ~/wst/trimfile/continued/paired/Kin_Nov.fasta -o ${i}noRG.bam ${i}best.sam
+
+java -Xmx20g -XX:PermSize=15g -XX:MaxPermSize=15g -Djava.io.tmpdir=bla -jar /usr/share/picard-tools-1.96/AddOrReplaceReadGroups.jar INPUT=${i}noRG.bam OUTPUT=${i}std.bam SORT_ORDER=coordinate RGID=${i} RGLB=Papi RGPL=illumina RGSM=${i} RGPU=none VALIDATION_STRINGENCY=LENIENT >> addorreplacereadgoups_${i}.log 2>&1
+java -Xmx20g -XX:PermSize=15g -XX:MaxPermSize=15g -jar /usr/share/picard-tools-1.96/BuildBamIndex.jar INPUT=${i}std.bam VALIDATION_STRINGENCY=LENIENT >> addorreplacereadgoups_buildindex_${i}.log 2>&1
+
+ java -Xmx20g -XX:PermSize=15g -XX:MaxPermSize=15g -jar /usr/share/picard-tools-1.96/MarkDuplicates.jar INPUT=${i}std.bam OUTPUT=${i}std_noduplicates.bam METRICS_FILE=${i}std.duplicate_matrics REMOVE_DUPLICATES=true ASSUME_SORTED=true VALIDATION_STRINGENCY=LENIENT >> markduplicates_${i}.log 2>&1
+ java -Xmx20g -XX:PermSize=15g -XX:MaxPermSize=15g -jar /usr/share/picard-tools-1.96/BuildBamIndex.jar INPUT=${i}std_noduplicates.bam VALIDATION_STRINGENCY=LENIENT >> markduplicates_buildindex_${i}.log 2>&1
+ 
+ java -Xmx20g -XX:PermSize=15g -XX:MaxPermSize=15g -jar /usr/share/GenomeAnalysisTK-3.7/GenomeAnalysisTK.jar -T RealignerTargetCreator -nt 20 -I ${i}std_noduplicates.bam -R ~/wst/trimfile/continued/paired/Kin_Nov.fasta -o ${i}forIndelAligner.intervals >> realignertargetcreator_index_${i}.log 2>&1
+ java -Xmx20g -XX:PermSize=15g -XX:MaxPermSize=15g -jar /usr/share/GenomeAnalysisTK-3.7/GenomeAnalysisTK.jar -T IndelRealigner -I ${i}std_noduplicates.bam -R ~/wst/trimfile/continued/paired/Kin_Nov.fasta -targetIntervals ${i}forIndelAligner.intervals -o ${i}std_noduplicates.realign.bam -maxReads 100000 >> indelrealigner_index_${i}.log 2>&1
+
+done
+
+#generate VCF
+java -jar /usr/share/GenomeAnalysisTK-3.7/GenomeAnalysisTK.jar -T UnifiedGenotyper -nt 20 -R ~/wst/continued/paired/Kin_Nov.fasta -I x.bam --heterozygosity 0.05 -stand_call_conf 50.0 -dcov 250 -o x.vcf >> x.vcf.log 2>&1
+
+#vcf2ped
+vcftools --gzvcf x.vcf.gz --plink  --out outputname
+
+#tree construction using raxml
+#nucleotide tree
+raxmlHPC -f a -m GTRGAMMA -p 12345 -x 12345 -# 100 -T 20 -s x.phy -n x.tree >> x.log 2>&1
+#protein tree
+/usr/bin/raxmlHPC -f a -m PROTGAMMAWAG -p 12345 -x 12345 -# 100 -T 20 -s 34indivaa.phy -n 34indivaa_mltree 
+
+#pca
+plink --file x.ped --pca 
+
+#psmc
+#analysis
+fadir=
+dir=
+for i in `cat bamlist`
+do
+samtools mpileup -uf ${fadir}/Kin_Nov.fasta ${dir}/${i}.bam|bcftools call -c - |vcfutils.pl vcf2fq -d 5 -D 30 |gzip >${i}_aln.fq.gz
+/usr/share/psmc/utils/fq2psmcfa -q20 ${i}_aln.fq.gz > ${i}.psmcfa
+/usr/share/psmc/psmc -N25 -t15 -r5 -p "4+25*2+4+6" -o ${i}.psmc ${i}.psmcfa
+done
+#bootstrap
+/usr/share/psmc/utils/splitfa 611_FJ.psmcfa > 611_FJ_split.fa
+seq 100 | xargs -i echo /usr/share/psmc/psmc -N25 -t15 -r5 -b -p 4+25*2+4+6 \ -o FJround-{}.psmc FJ_split.fa | sh 
+
+#G-PhoCS
+/usr/share/G-phoCS/bin/G-phoCS x.ctl
