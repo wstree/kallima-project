@@ -1,1 +1,146 @@
+#this script is for generating the mulitple sequence align script
+#script is adapted from the whole genome alignment method (Zhang L, Ren Y, Yang T, Li G, Chen J, Gschwend AR, Yu Y, Hou G, Zi J, Zhou R, et al. 
+#Rapid evolution of protein diversity by de novo origination in Oryza. Nat Ecol Evol. 2019;3:679–690.)
+#for running MSA, dependencies: 
+
+#!/bin/bash
+
+# Variate assignment
+Species="inversion_jco,inversion_kia,inversion_kin,inversion_kpa"
+Outputfile="Kallima.sh"
+python="/data/yangpeiwen/anaconda3/bin/python"
+
+# Preprocessing
+SpeciesName=(${Species//,/ })
+LengthOfArray=${#SpeciesName[*]}
+touch ${Outputfile}
+
+
+# Adding directories to the PATH environment variable
+echo "export PATH=\$PATH:/data/yangpeiwen/application/MSA/" >> ${Outputfile}
+echo "export PATH=\$PATH:/data/yangpeiwen/application/RepeatMasker/" >> ${Outputfile}
+echo "export PATH=\$PATH:/data/yangpeiwen/application/lastz-1.04.03/src/" >> ${Outputfile}
+echo "export PATH=\$PATH:/data/yangpeiwen/application/minimap2-master/" >> ${Outputfile}
+
+
+for ((i=1; i<$LengthOfArray; i++))
+do
+	p=0
+	echo "pslSwap psl/${SpeciesName[i]}.${SpeciesName[p]}.psl psl/${SpeciesName[p]}.${SpeciesName[i]}.psl"
+done >> ${Outputfile}
+
+for ((i=1; i<$LengthOfArray; i++))
+do
+	p=0
+	echo "mkdir psl/${SpeciesName[p]}_${SpeciesName[i]}; pslSplitOnTarget psl/${SpeciesName[p]}.${SpeciesName[i]}.psl psl/${SpeciesName[p]}_${SpeciesName[i]} -lump"
+done >> ${Outputfile}
+
+
+echo "mkdir chain" >> ${Outputfile}
+for ((i=1; i<$LengthOfArray; i++))
+do
+	p=0
+	echo "mkdir chain/${SpeciesName[p]}_${SpeciesName[i]}; for j in psl/${SpeciesName[p]}_${SpeciesName[i]}/*.psl; do axtChain \${j} MaskGenome/${SpeciesName[p]} MaskGenome/${SpeciesName[i]} chain/${SpeciesName[p]}_${SpeciesName[i]}/\`basename \${j} .psl\`.chain -linearGap=loose -psl; done"
+done >> ${Outputfile}
+
+
+# Netting
+echo "mkdir net" >> ${Outputfile}
+for ((i=1; i<$LengthOfArray; i++))
+do
+	p=0
+	echo "chainMergeSort chain/${SpeciesName[p]}_${SpeciesName[i]}/*.chain >chain/${SpeciesName[p]}.${SpeciesName[i]}.chain; chainPreNet chain/${SpeciesName[p]}.${SpeciesName[i]}.chain MaskGenome/${SpeciesName[p]}.sizes MaskGenome/${SpeciesName[i]}.sizes chain/${SpeciesName[p]}.${SpeciesName[i]}.pre.chain; chainNet chain/${SpeciesName[p]}.${SpeciesName[i]}.pre.chain -minSpace=1 MaskGenome/${SpeciesName[p]}.sizes MaskGenome/${SpeciesName[i]}.sizes stdout /dev/null | netSyntenic stdin net/${SpeciesName[p]}.${SpeciesName[i]}.noClass.net;netToAxt net/${SpeciesName[p]}.${SpeciesName[i]}.noClass.net chain/${SpeciesName[p]}.${SpeciesName[i]}.pre.chain MaskGenome/${SpeciesName[p]}/ MaskGenome/${SpeciesName[i]}/ stdout | axtSort stdin net/${SpeciesName[p]}.${SpeciesName[i]}.axt"
+done >> ${Outputfile}
+
+for ((i=1; i<$LengthOfArray; i++))
+do
+	p=0
+	echo "gzip -c chain/${SpeciesName[p]}.${SpeciesName[i]}.pre.chain >chain/${SpeciesName[p]}.${SpeciesName[i]}.over.chain.gz"
+done >> ${Outputfile}
+
+
+# rbest
+echo "mkdir rbest" >> ${Outputfile}
+for ((i=1; i<$LengthOfArray; i++))
+do
+	p=0
+	# Swap ${SpeciesName[p]}-best chains to be ${SpeciesName[i]}-referenced:
+	echo "chainStitchId chain/${SpeciesName[p]}.${SpeciesName[i]}.over.chain.gz stdout | chainSwap stdin stdout | chainSort stdin chain/${SpeciesName[i]}.${SpeciesName[p]}.tBest.chain"
+	# Net those on ${SpeciesName[i]} to get ${SpeciesName[i]}-ref'd reciprocal best net:
+	echo "chainPreNet chain/${SpeciesName[i]}.${SpeciesName[p]}.tBest.chain MaskGenome/{${SpeciesName[i]},${SpeciesName[p]}}.sizes stdout | chainNet -minSpace=1 -minScore=0 stdin MaskGenome/{${SpeciesName[i]},${SpeciesName[p]}}.sizes stdout /dev/null | netSyntenic stdin stdout | gzip -c > rbest/${SpeciesName[i]}.${SpeciesName[p]}.rbest.net.gz"
+	# Extract ${SpeciesName[i]}-ref'd reciprocal best chain:
+	echo "netChainSubset rbest/${SpeciesName[i]}.${SpeciesName[p]}.rbest.net.gz chain/${SpeciesName[i]}.${SpeciesName[p]}.tBest.chain stdout | chainStitchId stdin stdout | gzip -c > chain/${SpeciesName[i]}.${SpeciesName[p]}.rbest.chain.gz"
+	# Swap to get ${SpeciesName[p]}-ref'd reciprocal best chain:
+	echo "chainSwap chain/${SpeciesName[i]}.${SpeciesName[p]}.rbest.chain.gz stdout | chainSort stdin stdout | gzip -c > chain/${SpeciesName[p]}.${SpeciesName[i]}.rbest.chain.gz"
+	# Net those on ${SpeciesName[p]} to get ${SpeciesName[p]}-ref'd reciprocal best net:
+	echo "chainPreNet chain/${SpeciesName[p]}.${SpeciesName[i]}.rbest.chain.gz MaskGenome/{${SpeciesName[p]},${SpeciesName[i]}}.sizes stdout | chainNet -minSpace=1 -minScore=0 stdin MaskGenome/{${SpeciesName[p]},${SpeciesName[i]}}.sizes stdout /dev/null | netSyntenic stdin stdout | gzip -c > rbest/${SpeciesName[p]}.${SpeciesName[i]}.rbest.net.gz"
+	# Clean up the one temp file and make md5sum:
+	echo "rm chain/${SpeciesName[i]}.${SpeciesName[p]}.tBest.chain"
+	# Create axt and maf files
+	# Make rbest net axt's download: one .axt per ${SpeciesName[p]} seq.
+	echo "netSplit rbest/${SpeciesName[p]}.${SpeciesName[i]}.rbest.net.gz rbest/${SpeciesName[p]}.${SpeciesName[i]}.rBestNet"
+	echo "chainSplit chain/${SpeciesName[p]}.${SpeciesName[i]}.rBestChain chain/${SpeciesName[p]}.${SpeciesName[i]}.rbest.chain.gz"
+	echo "mkdir rbest/${SpeciesName[p]}.${SpeciesName[i]}.axtRBestNet"
+	echo "for f in rbest/${SpeciesName[p]}.${SpeciesName[i]}.rBestNet/*.net; do netToAxt \${f} chain/${SpeciesName[p]}.${SpeciesName[i]}.rBestChain/\`basename \${f%.*}\`.chain MaskGenome/${SpeciesName[p]}.2bit MaskGenome/${SpeciesName[i]}.2bit stdout | axtSort stdin stdout | gzip -c > rbest/${SpeciesName[p]}.${SpeciesName[i]}.axtRBestNet/\`basename \${f%.*}\`.${SpeciesName[p]}.${SpeciesName[i]}.net.axt.gz; done"
+	echo "netSplit rbest/${SpeciesName[i]}.${SpeciesName[p]}.rbest.net.gz rbest/${SpeciesName[i]}.${SpeciesName[p]}.rBestNet"
+	echo "chainSplit chain/${SpeciesName[i]}.${SpeciesName[p]}.rBestChain chain/${SpeciesName[i]}.${SpeciesName[p]}.rbest.chain.gz"
+	echo "mkdir rbest/${SpeciesName[i]}.${SpeciesName[p]}.axtRBestNet"
+	echo "for f in rbest/${SpeciesName[i]}.${SpeciesName[p]}.rBestNet/*.net; do netToAxt \${f} chain/${SpeciesName[i]}.${SpeciesName[p]}.rBestChain/\`basename \${f%.*}\`.chain MaskGenome/${SpeciesName[i]}.2bit MaskGenome/${SpeciesName[p]}.2bit stdout | axtSort stdin stdout | gzip -c > rbest/${SpeciesName[i]}.${SpeciesName[p]}.axtRBestNet/\`basename \${f%.*}\`.${SpeciesName[i]}.${SpeciesName[p]}.net.axt.gz; done"
+	# Make rbest mafNet for multiz: one .maf per ${SpeciesName[p]} seq.
+	echo "mkdir rbest/${SpeciesName[p]}.${SpeciesName[i]}.mafRBestNet"
+	echo "for f in rbest/${SpeciesName[p]}.${SpeciesName[i]}.axtRBestNet/*.${SpeciesName[p]}.${SpeciesName[i]}.net.axt.gz; do axtToMaf -tPrefix=${SpeciesName[p]}. -qPrefix=${SpeciesName[i]}. \${f} MaskGenome/{${SpeciesName[p]},${SpeciesName[i]}}.sizes stdout | gzip -c > rbest/${SpeciesName[p]}.${SpeciesName[i]}.mafRBestNet/\`basename \${f%.*}\`.maf.gz; done"
+done >> ${Outputfile}
+
+
+echo "mkdir rbest/rBestAxt" >> ${Outputfile}
+for i in ${SpeciesName[*]}
+do
+	j=${SpeciesName[0]}
+	if [ $i != $j ]
+	then
+		echo "for k in rbest/${i}.${j}.axtRBestNet/*.gz;do gzip -d --stdout \${k};done >rbest/rBestAxt/${i}.${j}.axt"
+	fi
+done >> ${Outputfile}
+
+
+#phylo
+echo "mkdir phylo" >> ${Outputfile}
+echo "mkdir phylo/maf" >> ${Outputfile}
+for ((i=$LengthOfArray-1; i>0; i--))
+do
+	echo "gzip -d --stdout rbest/${SpeciesName[0]}.${SpeciesName[i]}.mafRBestNet/*.gz|grep -v "^#"|awk 'BEGIN{printf(\"##maf version=1 scoring=tba.v8\n#tba.v8 ${Tree}\n\")}{print \$0}' >phylo/maf/${SpeciesName[0]}.${SpeciesName[i]}.maf"
+done >> ${Outputfile}
+temp=${SpeciesName[0]}.${SpeciesName[1]}
+for ((i=2; i<LengthOfArray; i++))
+do
+	echo "multiz phylo/maf/${temp}.maf phylo/maf/${SpeciesName[0]}.${SpeciesName[i]}.maf v1 all >phylo/maf/${temp}.${SpeciesName[i]}.maf"
+	temp=${temp}.${SpeciesName[i]}
+done >> ${Outputfile}
+
+
+echo "cat phylo/maf/${temp}.maf |grep -v \"#\"|sed 's/\.[^ ]*//' |" >>${Outputfile}
+echo "awk 'BEGIN{s=0}" >> ${Outputfile}
+echo "{if(\$1==\"a\"){" >> ${Outputfile}
+for ((p=0;p<${LengthOfArray};p++))
+do
+	echo "if(a[\"${SpeciesName[p]}\"]==0){for(i=1;i<=s;i++){a${p}=a${p}\"-\"}}else{a${p}=a${p}\"\"a[\"${SpeciesName[p]}\"]}"
+done >> ${Outputfile}
+
+echo "s=0" >> ${Outputfile}
+for ((p=0;p<${LengthOfArray};p++))
+do
+	echo "a[\"${SpeciesName[p]}\"]=0"
+done >> ${Outputfile}
+echo "}" >> ${Outputfile}
+echo "if(\$1==\"s\"){a[\$2]=\$7;s=length(\$7)}}" >> ${Outputfile}
+echo "END{" >> ${Outputfile}
+
+for ((p=0;p<${LengthOfArray};p++))
+do 
+	echo "printf(\">${SpeciesName[p]}\n%s\n\",a${p})"
+done >> ${Outputfile}
+echo "}" >> ${Outputfile}
+echo "' >conc.fa" >> ${Outputfile}
+
+chmod +x ${Outputfile}
 
